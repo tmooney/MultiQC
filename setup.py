@@ -64,6 +64,7 @@ setup(
         "rich-click",
         "simplejson",
         "spectra>=0.0.10",
+        "google-cloud-storage"
     ],
     entry_points={
         "console_scripts": [

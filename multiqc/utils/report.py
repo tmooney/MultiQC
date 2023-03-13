@@ -21,6 +21,7 @@ import rich.progress
 import yaml
 
 from . import config
+from google.cloud import storage
 
 logger = config.logger
 
@@ -320,6 +321,199 @@ def get_filelist(run_module_names):
         if "skipped_" in key and file_search_stats[key] > 0:
             summaries.append(f"{key}: {file_search_stats[key]}")
     logger.debug(f"Summary of files that were skipped by the search: [{'] // ['.join(summaries)}]")
+
+
+
+def search_gcs(uri):
+    bucket_name, blob_name = uri.replace("gs://", "").split("/", 1)
+    storage_client = storage.Client()
+    bucket = storage_client.bucket(bucket_name)
+    blob = bucket.get_blob(blob_name)
+
+    # Prep search patterns
+    print("preping patterns")
+    spatterns = [{}, {}, {}, {}, {}, {}, {}]
+    ignored_patterns = []
+    skipped_patterns = []
+    for key, sps in config.sp.items():
+        if not isinstance(sps, list):
+            sps = [sps]
+
+        # Warn if we have any unrecognised search pattern keys
+        expected_sp_keys = [
+            "fn",
+            "fn_re",
+            "contents",
+            "contents_re",
+            "num_lines",
+            "shared",
+            "skip",
+            "max_filesize",
+            "exclude_fn",
+            "exclude_fn_re",
+            "exclude_contents",
+            "exclude_contents_re",
+        ]
+        unrecognised_keys = [y for x in sps for y in x.keys() if y not in expected_sp_keys]
+        if len(unrecognised_keys) > 0:
+            logger.warning("Unrecognised search pattern keys for '{}': {}".format(key, ", ".join(unrecognised_keys)))
+
+        # Check if we are skipping this search key
+        if any([x.get("skip") for x in sps]):
+            skipped_patterns.append(key)
+
+        # Split search patterns according to speed of execution.
+        if any([x for x in sps if "contents_re" in x]):
+            if any([x for x in sps if "num_lines" in x]):
+                spatterns[4][key] = sps
+            elif any([x for x in sps if "max_filesize" in x]):
+                spatterns[5][key] = sps
+            else:
+                spatterns[6][key] = sps
+        elif any([x for x in sps if "contents" in x]):
+            if any([x for x in sps if "num_lines" in x]):
+                spatterns[1][key] = sps
+            elif any([x for x in sps if "max_filesize" in x]):
+                spatterns[2][key] = sps
+            else:
+                spatterns[3][key] = sps
+        else:
+            spatterns[0][key] = sps
+
+    if len(ignored_patterns) > 0:
+        logger.debug("Ignored {} search patterns as didn't match running modules.".format(len(ignored_patterns)))
+
+    if len(skipped_patterns) > 0:
+        logger.info("Skipping {} file search patterns".format(len(skipped_patterns)))
+        logger.debug("Skipping search patterns: {}".format(", ".join(skipped_patterns)))
+
+    if blob.size > 10e6:
+        return False
+
+    # Test file for each search pattern
+    for patterns in spatterns:
+        for key, sps in patterns.items():
+            for sp in sps:
+                if blob_matches_pattern(sp, blob):
+                    # Check that we shouldn't exclude this file
+                    if not exclude_blob(sp, blob):
+                        return True
+
+    return False
+
+
+def blob_matches_pattern(pattern, blob):
+    """
+    Function to search a single gcs blob for a single search pattern.
+    """
+    fn_matched = False
+    contents_matched = False
+    blob_url = blob.public_url
+
+    # Use mimetypes to exclude binary files where possible
+    if not re.match(r".+_mqc\.(png|jpg|jpeg)", blob_url) and config.ignore_images:
+        (ftype, encoding) = mimetypes.guess_type(blob_url)
+        if encoding is not None:
+            return False
+        if ftype is not None and ftype.startswith("image"):
+            return False
+
+    # Search pattern specific filesize limit
+    filesize = blob.size
+    if pattern.get("max_filesize") is not None:
+        if filesize > pattern.get("max_filesize"):
+            return False
+
+    # Search by file name (glob)
+    if pattern.get("fn") is not None:
+        if fnmatch.fnmatch(blob_url, pattern["fn"]):
+            fn_matched = True
+            if pattern.get("contents") is None and pattern.get("contents_re") is None:
+                return True
+
+    # Search by file name (regex)
+    if pattern.get("fn_re") is not None:
+        if re.match(pattern["fn_re"], blob_url):
+            fn_matched = True
+            if pattern.get("contents") is None and pattern.get("contents_re") is None:
+                return True
+
+    # Search by file contents
+    if pattern.get("contents") is not None or pattern.get("contents_re") is not None:
+        if pattern.get("contents_re") is not None:
+            repattern = re.compile(pattern["contents_re"])
+        try:
+            with blob.open(encoding="utf-8") as fh:
+                l = 1
+                for line in fh:
+                    # Search by file contents (string)
+                    if pattern.get("contents") is not None:
+                        if pattern["contents"] in line:
+                            contents_matched = True
+                            if pattern.get("fn") is None and pattern.get("fn_re") is None:
+                                return True
+                            break
+                    # Search by file contents (regex)
+                    elif pattern.get("contents_re") is not None:
+                        if re.search(repattern, line):
+                            contents_matched = True
+                            if pattern.get("fn") is None and pattern.get("fn_re") is None:
+                                return True
+                            break
+                    # Break if we've searched enough lines for this pattern
+                    if pattern.get("num_lines") and l >= pattern.get("num_lines"):
+                        break
+                    l += 1
+        # Can't open file - usually because it's a binary file and we're reading as utf-8
+        except (IOError, OSError, ValueError, UnicodeDecodeError) as e:
+            if config.report_readerrors:
+                logger.debug(f"Couldn't read file when looking for output: {blob_url}, {e}")
+            file_search_stats["skipped_file_contents_search_errors"] += 1
+            return False
+
+    return fn_matched and contents_matched
+
+
+def exclude_blob(sp, blob):
+    """
+    Exclude discovered gcs blob if they match the special exclude_
+    search pattern keys
+    """
+    blob_url = blob.public_url
+    # Make everything a list if it isn't already
+    for k in sp:
+        if k in ["exclude_fn", "exclude_fn_re" "exclude_contents", "exclude_contents_re"]:
+            if not isinstance(sp[k], list):
+                sp[k] = [sp[k]]
+
+    # Search by file name (glob)
+    if "exclude_fn" in sp:
+        for pat in sp["exclude_fn"]:
+            if fnmatch.fnmatch(blob_url, pat):
+                return True
+
+    # Search by file name (regex)
+    if "exclude_fn_re" in sp:
+        for pat in sp["exclude_fn_re"]:
+            if re.match(pat, blob_url):
+                return True
+
+    # Search the contents of the file
+    if "exclude_contents" in sp or "exclude_contents_re" in sp:
+        # Compile regex patterns if we have any
+        if "exclude_contents_re" in sp:
+            sp["exclude_contents_re"] = [re.compile(pat) for pat in sp["exclude_contents_re"]]
+        with blob.open(encoding="utf-8") as fh:
+            for line in fh:
+                if "exclude_contents" in sp:
+                    for pat in sp["exclude_contents"]:
+                        if pat in line:
+                            return True
+                if "exclude_contents_re" in sp:
+                    for pat in sp["exclude_contents_re"]:
+                        if re.search(pat, line):
+                            return True
+    return False
 
 
 def search_file(pattern, f, module_key):

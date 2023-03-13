@@ -156,7 +156,7 @@ def mqc_cl_config(cl_config):
 
 def mqc_add_config(conf, conf_path=None):
     """Add to the global config with given MultiQC config dict"""
-    global custom_css_files, fn_clean_exts, fn_clean_trim
+    global custom_css_files, _clean_exts, fn_clean_trim
     log_new_config = {}
     log_filename_patterns = []
     log_filename_clean_extensions = []

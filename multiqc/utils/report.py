@@ -331,7 +331,6 @@ def search_gcs(uri):
     blob = bucket.get_blob(blob_name)
 
     # Prep search patterns
-    print("preping patterns")
     spatterns = [{}, {}, {}, {}, {}, {}, {}]
     ignored_patterns = []
     skipped_patterns = []
@@ -468,7 +467,6 @@ def blob_matches_pattern(pattern, blob):
         except (IOError, OSError, ValueError, UnicodeDecodeError) as e:
             if config.report_readerrors:
                 logger.debug(f"Couldn't read file when looking for output: {blob_url}, {e}")
-            file_search_stats["skipped_file_contents_search_errors"] += 1
             return False
 
     return fn_matched and contents_matched

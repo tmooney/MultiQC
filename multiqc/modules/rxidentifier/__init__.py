@@ -1,0 +1,1 @@
+from .rxidentifier import MultiqcModule

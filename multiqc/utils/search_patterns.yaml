@@ -705,6 +705,9 @@ rseqc/tin:
   fn: "*.summary.txt"
   contents: "TIN(median)"
   num_lines: 1
+rxidentifier:
+  fn: "*.Rx"
+  num_lines: 1
 salmon/meta:
   fn: "meta_info.json"
   contents: "salmon_version"

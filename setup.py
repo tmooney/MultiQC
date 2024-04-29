@@ -172,6 +172,7 @@ setup(
             "rockhopper = multiqc.modules.rockhopper:MultiqcModule",
             "rsem = multiqc.modules.rsem:MultiqcModule",
             "rseqc = multiqc.modules.rseqc:MultiqcModule",
+            "rxidentifier = multiqc.modules.rxidentifier:MultiqcModule",
             "salmon = multiqc.modules.salmon:MultiqcModule",
             "sambamba = multiqc.modules.sambamba:MultiqcModule",
             "samblaster = multiqc.modules.samblaster:MultiqcModule",
